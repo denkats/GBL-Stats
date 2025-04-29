@@ -1,0 +1,243 @@
+import asyncio
+from playwright.async_api import async_playwright
+from bs4 import BeautifulSoup
+import csv
+
+# Greek headers from ESAKE table
+ESAKE_HEADERS = [
+    "ΠΑΙΚΤΗΣ", "P", "2PM-A", "3PM-A", "FTM-A", "REBS", "D.REBS", "O.REBS",
+    "AST", "BLK", "BLK-A", "FOULS F", "FOULS M", "STL", "TO", "TIM.PL.", "RANK"
+]
+
+# Helper function to extract clean scores
+def extract_scores(score_text):
+    for sep in ['vs', '-', '–']:
+        if sep in score_text:
+            return [s.strip() for s in score_text.split(sep)]
+    return [score_text.strip(), ""]
+
+async def scrape_esake_boxscores_async(game_links, output_file="esake_boxscores3.csv"):
+    all_rows = []
+
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(headless=False)
+        page = await browser.new_page()
+
+        for url in game_links:
+            try:
+                print(f"\n🔍 Scraping: {url}")
+                await page.goto(url, timeout=30000)
+
+                # Try to accept cookies
+                try:
+                    await page.locator("button:has-text('Αποδοχή')").click(timeout=3000)
+                    print("🍪 Cookies accepted")
+                except:
+                    pass
+
+                try:
+                    await page.wait_for_selector("table.table-esake", timeout=20000)
+                except:
+                    print(f"⚠️ .table-esake not found after waiting on: {url}")
+                    continue
+
+                html = await page.content()
+                soup = BeautifulSoup(html, "html.parser")
+
+                # ✅ Extract team names and scores (from final score banner)
+                score_block = soup.select_one("div.esake-pgame-view-final-score.row.equal")
+                spans = score_block.find_all("span") if score_block else []
+
+                if len(spans) >= 4:
+                    team1 = spans[0].get_text(strip=True)
+                    team2 = spans[3].get_text(strip=True)
+
+                    score_parts = extract_scores(spans[1].get_text(strip=True))
+                    team1_score = score_parts[0] if len(score_parts) > 0 else "-"
+                    team2_score = score_parts[1] if len(score_parts) > 1 else "-"
+                else:
+                    team1 = team2 = "Unknown"
+                    team1_score = team2_score = "-"
+
+                tables = soup.find_all("table", class_="table-esake")
+                if len(tables) != 2:
+                    print(f"⚠️ Could not find 2 tables. Skipping: {url}")
+                    continue
+
+                for idx, table in enumerate(tables):
+                    team = team1 if idx == 0 else team2
+                    opponent = team2 if idx == 0 else team1
+                    team_score = team1_score if idx == 0 else team2_score
+                    opp_score = team2_score if idx == 0 else team1_score
+
+                    for row in table.find_all("tr")[1:]:
+                        cols = row.find_all("td")
+                        values = [' '.join(td.stripped_strings) for td in cols]
+
+                        if not values or all(v == '' for v in values):
+                            continue
+                        if len(values) != len(ESAKE_HEADERS):
+                            print(f"⚠️ Skipping row (column mismatch): {values}")
+                            continue
+
+                        player_data = dict(zip(ESAKE_HEADERS, values))
+                        player_data["Ομάδα"] = team
+                        player_data["Αντίπαλος"] = opponent
+                        player_data["Πόντοι Ομάδας"] = int(team_score) if team_score.isdigit() else team_score
+                        player_data["Πόντοι Αντιπάλου"] = int(opp_score) if opp_score.isdigit() else opp_score
+                        player_data["GameURL"] = url
+
+                        all_rows.append(player_data)
+
+            except Exception as e:
+                print(f"❌ Error scraping {url}: {e}")
+
+        await browser.close()
+
+    # ✅ Export to CSV
+    if all_rows:
+        keys = list(all_rows[0].keys())
+        with open(output_file, "w", newline="", encoding="utf-8-sig") as f:
+            writer = csv.DictWriter(f, fieldnames=keys)
+            writer.writeheader()
+            writer.writerows(all_rows)
+        print(f"\n✅ Done! Exported {len(all_rows)} player rows to '{output_file}'")
+    else:
+        print("⚠️ No data scraped.")
+game_links = [
+    "https://www.esake.gr/el/action/EsakegameView?idgame=B7D95BE5&mode=3",
+    "https://www.esake.gr/el/action/EsakegameView?idgame=4A787913&mode=3",
+    "https://www.esake.gr/el/action/EsakegameView?idgame=A7429876&mode=3",
+    "https://www.esake.gr/el/action/EsakegameView?idgame=F3A00AE2&mode=3",
+    "https://www.esake.gr/el/action/EsakegameView?idgame=A7FF40AD&mode=3",
+    "https://www.esake.gr/el/action/EsakegameView?idgame=1E32A46C&mode=3",
+    "https://www.esake.gr/el/action/EsakegameView?idgame=EABD9029&mode=3",
+    "https://www.esake.gr/el/action/EsakegameView?idgame=FAC95BBC&mode=3",
+    "https://www.esake.gr/el/action/EsakegameView?idgame=0590A972&mode=3",
+    "https://www.esake.gr/el/action/EsakegameView?idgame=22C3B932&mode=3",
+    "https://www.esake.gr/el/action/EsakegameView?idgame=EF563BD0&mode=3",
+    "https://www.esake.gr/el/action/EsakegameView?idgame=D658AA5C&mode=3",
+    "https://www.esake.gr/el/action/EsakegameView?idgame=7865EE48&mode=3",
+    "https://www.esake.gr/el/action/EsakegameView?idgame=D592B43B&mode=3",
+    "https://www.esake.gr/el/action/EsakegameView?idgame=D8112E9C&mode=3",
+    "https://www.esake.gr/el/action/EsakegameView?idgame=8B073B43&mode=3",
+    "https://www.esake.gr/el/action/EsakegameView?idgame=CE9705C8&mode=3",
+    "https://www.esake.gr/el/action/EsakegameView?idgame=C1A8FCE7&mode=3",
+    "https://www.esake.gr/el/action/EsakegameView?idgame=BA7F25C6&mode=3",
+    "https://www.esake.gr/el/action/EsakegameView?idgame=25340D2C&mode=3",
+    "https://www.esake.gr/el/action/EsakegameView?idgame=EFB0AC50&mode=3",
+    "https://www.esake.gr/el/action/EsakegameView?idgame=45F07FE4&mode=3",
+    "https://www.esake.gr/el/action/EsakegameView?idgame=2BEED133&mode=3",
+    "https://www.esake.gr/el/action/EsakegameView?idgame=1010A731&mode=3",
+    "https://www.esake.gr/el/action/EsakegameView?idgame=531EA5F9&mode=3",
+    "https://www.esake.gr/el/action/EsakegameView?idgame=CCB182C5&mode=3",
+    "https://www.esake.gr/el/action/EsakegameView?idgame=1B2122F7&mode=3",
+    "https://www.esake.gr/el/action/EsakegameView?idgame=5009385E&mode=3",
+    "https://www.esake.gr/el/action/EsakegameView?idgame=2800966B&mode=3",
+    "https://www.esake.gr/el/action/EsakegameView?idgame=7BB85954&mode=3",
+    "https://www.esake.gr/el/action/EsakegameView?idgame=15087215&mode=3",
+    "https://www.esake.gr/el/action/EsakegameView?idgame=B610AB13&mode=3",
+    "https://www.esake.gr/el/action/EsakegameView?idgame=CAA0FD7E&mode=3",
+    "https://www.esake.gr/el/action/EsakegameView?idgame=C8F7486B&mode=3",
+    "https://www.esake.gr/el/action/EsakegameView?idgame=7C9A590D&mode=3",
+    "https://www.esake.gr/el/action/EsakegameView?idgame=DAFD88D7&mode=3",
+    "https://www.esake.gr/el/action/EsakegameView?idgame=E986E226&mode=3",
+    "https://www.esake.gr/el/action/EsakegameView?idgame=F6BBE4F7&mode=3",
+    "https://www.esake.gr/el/action/EsakegameView?idgame=E1E4336E&mode=3",
+    "https://www.esake.gr/el/action/EsakegameView?idgame=E3ECDC3C&mode=3",
+    "https://www.esake.gr/el/action/EsakegameView?idgame=43759481&mode=3",
+    "https://www.esake.gr/el/action/EsakegameView?idgame=CFB683BB&mode=3",
+    "https://www.esake.gr/el/action/EsakegameView?idgame=DE4B6F5D&mode=3",
+    "https://www.esake.gr/el/action/EsakegameView?idgame=9287888E&mode=3",
+    "https://www.esake.gr/el/action/EsakegameView?idgame=67C9D853&mode=3",
+    "https://www.esake.gr/el/action/EsakegameView?idgame=EA358268&mode=3",
+    "https://www.esake.gr/el/action/EsakegameView?idgame=31E9E7E9&mode=3",
+    "https://www.esake.gr/el/action/EsakegameView?idgame=48A2DCEB&mode=3",
+    "https://www.esake.gr/el/action/EsakegameView?idgame=F39C7B26&mode=3",
+    "https://www.esake.gr/el/action/EsakegameView?idgame=37241B25&mode=3",
+    "https://www.esake.gr/el/action/EsakegameView?idgame=3D04A3D0&mode=3",
+    "https://www.esake.gr/el/action/EsakegameView?idgame=107469CF&mode=3",
+    "https://www.esake.gr/el/action/EsakegameView?idgame=301B4B29&mode=3",
+    "https://www.esake.gr/el/action/EsakegameView?idgame=A3845B6F&mode=3",
+    "https://www.esake.gr/el/action/EsakegameView?idgame=15EDF7E9&mode=3",
+    "https://www.esake.gr/el/action/EsakegameView?idgame=303AD22B&mode=3",
+    "https://www.esake.gr/el/action/EsakegameView?idgame=B60AECB9&mode=3",
+    "https://www.esake.gr/el/action/EsakegameView?idgame=F7E14FD7&mode=3",
+    "https://www.esake.gr/el/action/EsakegameView?idgame=4B2F4BCA&mode=3",
+    "https://www.esake.gr/el/action/EsakegameView?idgame=0F1828D5&mode=3",
+    "https://www.esake.gr/el/action/EsakegameView?idgame=C0D3F4D4&mode=3",
+    "https://www.esake.gr/el/action/EsakegameView?idgame=D3A10210&mode=3",
+    "https://www.esake.gr/el/action/EsakegameView?idgame=31C5B2D7&mode=3",
+    "https://www.esake.gr/el/action/EsakegameView?idgame=BFF9C192&mode=3",
+    "https://www.esake.gr/el/action/EsakegameView?idgame=1A7A9C0D&mode=3",
+    "https://www.esake.gr/el/action/EsakegameView?idgame=3A4C499E&mode=3",
+    "https://www.esake.gr/el/action/EsakegameView?idgame=11504236&mode=3",
+    "https://www.esake.gr/el/action/EsakegameView?idgame=BAFB811C&mode=3",
+    "https://www.esake.gr/el/action/EsakegameView?idgame=0C08C53C&mode=3",
+    "https://www.esake.gr/el/action/EsakegameView?idgame=F543FC8E&mode=3",
+    "https://www.esake.gr/el/action/EsakegameView?idgame=E1683C73&mode=3",
+    "https://www.esake.gr/el/action/EsakegameView?idgame=A45620F5&mode=3",
+    "https://www.esake.gr/el/action/EsakegameView?idgame=AFDDE796&mode=3",
+    "https://www.esake.gr/el/action/EsakegameView?idgame=C5478D36&mode=3",
+    "https://www.esake.gr/el/action/EsakegameView?idgame=71E826A2&mode=3",
+    "https://www.esake.gr/el/action/EsakegameView?idgame=6B013D0C&mode=3",
+    "https://www.esake.gr/el/action/EsakegameView?idgame=13591645&mode=3",
+    "https://www.esake.gr/el/action/EsakegameView?idgame=8BA48684&mode=3",
+    "https://www.esake.gr/el/action/EsakegameView?idgame=EB5A119E&mode=3",
+    "https://www.esake.gr/el/action/EsakegameView?idgame=824397A3&mode=3",
+    "https://www.esake.gr/el/action/EsakegameView?idgame=12877E7C&mode=3",
+    "https://www.esake.gr/el/action/EsakegameView?idgame=89095590&mode=3",
+    "https://www.esake.gr/el/action/EsakegameView?idgame=652ACDF1&mode=3",
+    "https://www.esake.gr/el/action/EsakegameView?idgame=8601ABB4&mode=3",
+    "https://www.esake.gr/el/action/EsakegameView?idgame=7A07F8D2&mode=3",
+    "https://www.esake.gr/el/action/EsakegameView?idgame=A3C39BAA&mode=3",
+    "https://www.esake.gr/el/action/EsakegameView?idgame=FA22D0D5&mode=3",
+    "https://www.esake.gr/el/action/EsakegameView?idgame=279F7368&mode=3",
+    "https://www.esake.gr/el/action/EsakegameView?idgame=BCBBF743&mode=3",
+    "https://www.esake.gr/el/action/EsakegameView?idgame=F58E78A6&mode=3",
+    "https://www.esake.gr/el/action/EsakegameView?idgame=04822A81&mode=3",
+    "https://www.esake.gr/el/action/EsakegameView?idgame=AE9C3275&mode=3",
+    "https://www.esake.gr/el/action/EsakegameView?idgame=83E5711F&mode=3",
+    "https://www.esake.gr/el/action/EsakegameView?idgame=5EF2E48D&mode=3",
+    "https://www.esake.gr/el/action/EsakegameView?idgame=179FFB8E&mode=3",
+    "https://www.esake.gr/el/action/EsakegameView?idgame=923A2CAC&mode=3",
+    "https://www.esake.gr/el/action/EsakegameView?idgame=916B18B6&mode=3",
+    "https://www.esake.gr/el/action/EsakegameView?idgame=3762A88D&mode=3",
+    "https://www.esake.gr/el/action/EsakegameView?idgame=7AA87573&mode=3",
+    "https://www.esake.gr/el/action/EsakegameView?idgame=5E4E3B6F&mode=3",
+    "https://www.esake.gr/el/action/EsakegameView?idgame=4356B559&mode=3",
+    "https://www.esake.gr/el/action/EsakegameView?idgame=546EADD9&mode=3",
+    "https://www.esake.gr/el/action/EsakegameView?idgame=2DACCB33&mode=3",
+    "https://www.esake.gr/el/action/EsakegameView?idgame=A2AB128E&mode=3",
+    "https://www.esake.gr/el/action/EsakegameView?idgame=87E2E173&mode=3",
+    "https://www.esake.gr/el/action/EsakegameView?idgame=25E76693&mode=3",
+    "https://www.esake.gr/el/action/EsakegameView?idgame=4C0571A3&mode=3",
+    "https://www.esake.gr/el/action/EsakegameView?idgame=C7724F2B&mode=3",
+    "https://www.esake.gr/el/action/EsakegameView?idgame=893CACC8&mode=3",
+    "https://www.esake.gr/el/action/EsakegameView?idgame=5F5262B8&mode=3",
+    "https://www.esake.gr/el/action/EsakegameView?idgame=5E22EB95&mode=3",
+    "https://www.esake.gr/el/action/EsakegameView?idgame=0ECAB503&mode=3",
+    "https://www.esake.gr/el/action/EsakegameView?idgame=E2437BB6&mode=3",
+    "https://www.esake.gr/el/action/EsakegameView?idgame=5C850A6A&mode=3",
+    "https://www.esake.gr/el/action/EsakegameView?idgame=DFEF66BE&mode=3",
+    "https://www.esake.gr/el/action/EsakegameView?idgame=B413A699&mode=3",
+    "https://www.esake.gr/el/action/EsakegameView?idgame=E108F864&mode=3",
+    "https://www.esake.gr/el/action/EsakegameView?idgame=589EBE8E&mode=3",
+    "https://www.esake.gr/el/action/EsakegameView?idgame=F3A9F460&mode=3",
+    "https://www.esake.gr/el/action/EsakegameView?idgame=0EFF53D7&mode=3",
+    "https://www.esake.gr/el/action/EsakegameView?idgame=2FB9CEE5&mode=3",
+    "https://www.esake.gr/el/action/EsakegameView?idgame=FC8AF2F4&mode=3",
+    "https://www.esake.gr/el/action/EsakegameView?idgame=C6C04DE0&mode=3",
+    "https://www.esake.gr/el/action/EsakegameView?idgame=8FC479F6&mode=3",
+    "https://www.esake.gr/el/action/EsakegameView?idgame=48F1B0FA&mode=3",
+    "https://www.esake.gr/el/action/EsakegameView?idgame=A59449A9&mode=3",
+    "https://www.esake.gr/el/action/EsakegameView?idgame=9D2C6A82&mode=3",
+    "https://www.esake.gr/el/action/EsakegameView?idgame=E1A7C441&mode=3",
+    "https://www.esake.gr/el/action/EsakegameView?idgame=F680BB12&mode=3",
+    "https://www.esake.gr/el/action/EsakegameView?idgame=13C8608C&mode=3",
+    "https://www.esake.gr/el/action/EsakegameView?idgame=2C3E8B3A&mode=3",
+    "https://www.esake.gr/el/action/EsakegameView?idgame=2D0D87EA&mode=3",
+]
+
+# 🚀 Run
+await scrape_esake_boxscores_async(game_links)
